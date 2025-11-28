@@ -1,7 +1,12 @@
+from typing import TYPE_CHECKING
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, CallbackQuery   # ← основные типы
 from states.anketa import AnketaStates
 from utils import save_anketa, send_to_trainer
+
+if TYPE_CHECKING:
+    from aiogram.types import Message
 
 router = Router()
 
@@ -36,14 +41,20 @@ async def process_goals(message: types.Message, state: FSMContext):
     await state.set_state(AnketaStates.injuries)
 
 @router.message(AnketaStates.injuries)
-async def process_injuries(message: types.Message, state: FSMContext):
+async def process_injuries(message: Message, state: FSMContext) -> None:
+    await state.update_data(injuries=message.text)
+
+    user = message.from_user
+    if user is None:                       # ← защита от None
+        await message.answer("Ошибка: не удалось определить пользователя.")
+        return
+
     data = await state.get_data()
-    data["injuries"] = message.text
-    data["user_id"] = message.from_user.id
-    data["username"] = message.from_user.username or "Не указан"
+    data["user_id"] = user.id
+    data["username"] = user.username or "не_указан"
 
     await save_anketa(data)
     await send_to_trainer(data)
 
-    await message.answer("Спасибо! Твоя анкета отправлена тренеру на проверку.")
+    await message.answer("Спасибо! Анкета отправлена тренеру на проверку.")
     await state.clear()

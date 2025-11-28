@@ -1,14 +1,15 @@
 import asyncio
-import os
-from aiogram import Dispatcher, Bot
-from aiogram.fsm.storage.memory import MemoryStorage
-from handlers import start, anketa
 import logging
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from config import BOT_TOKEN            
+from handlers import start, anketa
 
 logging.basicConfig(level=logging.INFO)
 
-async def main():
-    bot = Bot(token=os.getenv("BOT_TOKEN"))
+async def main() -> None:
+    bot = Bot(token=BOT_TOKEN)           
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(start.router)
     dp.include_router(anketa.router)
