@@ -1,6 +1,6 @@
 import asyncpg
 from aiogram import Bot
-from config import DB_URL, TRAINER_CHAT_ID, BOT_TOKEN   # ←
+from .config import DB_URL, TRAINER_CHAT_ID, BOT_TOKEN   # ←
 
 bot = Bot(token=BOT_TOKEN)                               # ← str
 

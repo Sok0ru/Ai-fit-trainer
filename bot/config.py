@@ -13,4 +13,4 @@ def _getenv(name: str) -> str:
 BOT_TOKEN: Final[str]       = _getenv("BOT_TOKEN")
 TRAINER_CHAT_ID: Final[int] = int(_getenv("TRAINER_CHAT_ID"))
 DB_URL: Final[str]          = _getenv("DB_URL")
-OPENAI_API_KEY: Final[str]  = _getenv("OPENAI_API_KEY")
+#OPENAI_API_KEY: Final[str]= _getenv("OPENAI_API_KEY")

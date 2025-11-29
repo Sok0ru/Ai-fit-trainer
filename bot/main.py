@@ -3,8 +3,8 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN            
-from handlers import start, anketa
+from .config import BOT_TOKEN           
+from .handlers import start, anketa
 
 logging.basicConfig(level=logging.INFO)
 
