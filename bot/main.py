@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from .config import BOT_TOKEN           
-from .handlers import start, anketa
+from .handlers import start, anketa, trainer_choice
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,6 +13,7 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(start.router)
     dp.include_router(anketa.router)
+    dp.include_router(trainer_choice.router)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
