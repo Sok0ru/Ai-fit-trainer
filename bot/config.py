@@ -19,3 +19,5 @@ DB_URL: Final[str]          = _getenv("DB_URL")
 
 # GigaChat credentials
 GIGA_CLIENT_ID = os.getenv("GIGA_CLIENT_ID")
+GIGA_API_URL = os.getenv("GIGA_API_URL", "https://gigachat.api.sberbank.ru/v1")
+GIGA_MODEL = os.getenv("GIGA_MODEL", "GigaChat")

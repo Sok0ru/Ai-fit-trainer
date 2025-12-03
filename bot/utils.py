@@ -1,30 +1,82 @@
+# utils.py - объединённая версия
 import asyncpg
 from aiogram import Bot
-from .config import DB_URL, TRAINER_CHAT_ID, BOT_TOKEN
+from typing import Dict, Any, Optional
 import aiohttp
-import datetime
+import asyncio
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
-from typing import Dict, Optional, Any
 
 load_dotenv()
 
 bot_instance: Optional[Bot] = None
 
-def get_bot() -> Bot:
+def get_bot() -> Optional[Bot]:
     """Ленивая инициализация бота"""
     global bot_instance
     if bot_instance is None:
+        from config import BOT_TOKEN
+        if not BOT_TOKEN:
+            return None
         bot_instance = Bot(token=BOT_TOKEN)
     return bot_instance
 
-# --- 1. Сохранение анкеты ---
-async def save_anketa(data: dict) -> None:
+# --- 1. Класс GigaChatAuth внутри utils.py ---
+class GigaChatAuth:
+    def __init__(self, client_id: str, auth_url: str = "https://gigachat.api.sberbank.ru/v1/token"):
+        self.client_id = client_id
+        self.auth_url = auth_url
+        self._token: Optional[str] = None
+        self._token_expires: Optional[datetime] = None
+        self._lock = asyncio.Lock()
+    
+    async def get_token(self) -> Optional[str]:
+        """Получение JWT токена с кэшированием"""
+        async with self._lock:
+            # Проверяем, не истёк ли текущий токен
+            if self._token and self._token_expires and datetime.now() < self._token_expires:
+                return self._token
+            
+            # Получаем новый токен
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.client_id}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+                data = {"scope": "GIGACHAT_API_PERS"}
+                
+                async with session.post(self.auth_url, headers=headers, data=data) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    
+                    self._token = result["access_token"]
+                    # Токен живёт 30 минут, ставим 25 для запаса
+                    self._token_expires = datetime.now() + timedelta(minutes=25)
+                    
+                    print(f"✅ JWT токен получен, истекает в {self._token_expires.strftime('%H:%M:%S')}")
+                    return self._token
+
+# --- 2. Инициализация аутентификации ---
+from config import GIGA_CLIENT_ID
+giga_auth: Optional[GigaChatAuth] = None
+
+if GIGA_CLIENT_ID:
+    giga_auth = GigaChatAuth(GIGA_CLIENT_ID)
+    print("✅ GigaChatAuth инициализирован")
+else:
+    print("⚠️ GIGA_CLIENT_ID не установлен, GigaChat недоступен")
+
+# --- 3. Работа с базой данных ---
+async def save_anketa(data: Dict[str, Any]) -> None:
+    """Сохранение анкеты в БД"""
+    from config import DB_URL
+    
     conn = await asyncpg.connect(DB_URL)
     try:
         await conn.execute("""
-            INSERT INTO anketa (user_id, username, name, age, height, weight, goals, injuries)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO anketa (user_id, username, name, age, height, weight, goals, injuries, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
         """, 
         data["user_id"], 
         data.get("username"), 
@@ -37,143 +89,10 @@ async def save_anketa(data: dict) -> None:
     finally:
         await conn.close()
 
-# --- 2. Отправка тренеру ---
-async def send_to_trainer(data: dict) -> None:
-    bot = get_bot()
-    text = f"""
-📋 Новая анкета от @{data.get('username', 'не_указан')} (ID: {data['user_id']})
-
-Имя: {data['name']}
-Возраст: {data['age']}
-Рост: {data['height']} см
-Вес: {data['weight']} кг
-Цели: {data['goals']}
-Травмы: {data.get('injuries', 'нет')}
-
-Для генерации плана отправьте '+' или используйте /check_plan
-"""
-    await bot.send_message(TRAINER_CHAT_ID, text)
-
-# --- 3. Получение JWT токена для GigaChat ---
-async def get_giga_jwt() -> str:
-    """Получение JWT токена"""
-    # Проверяем кэшированный токен
-    jwt_file = "/opt/ai-fit/.jwt"
-    if os.path.exists(jwt_file):
-        with open(jwt_file, "r") as f:
-            token = f.read().strip()
-            # Проверяем, не истёк ли токен (грубо, по времени создания файла)
-            file_mtime = os.path.getmtime(jwt_file)
-            if datetime.datetime.now().timestamp() - file_mtime < 3600:  # 1 час
-                return token
-    
-    # Если токена нет или он истёк, получаем новый
-    CLIENT_ID = os.getenv("GIGA_CLIENT_ID")
-    if not CLIENT_ID:
-        raise ValueError("GIGA_CLIENT_ID не установлен в переменных окружения")
-    
-    import aiohttp
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://gigachat.api.sberbank.ru/v1/token",
-            headers={"Authorization": f"Bearer {CLIENT_ID}"},
-            data={"scope": "GIGACHAT_API_PERS"}
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            token = result["access_token"]
-            
-            # Сохраняем токен
-            os.makedirs(os.path.dirname(jwt_file), exist_ok=True)
-            with open(jwt_file, "w") as f:
-                f.write(token)
-            
-            return token
-
-# --- 4. Генерация плана (GigaChat) ---
-async def generate_plan(data: Dict[str, Any]) -> str:
-    """Генерация фитнес-плана через GigaChat"""
-    jwt = await get_giga_jwt()
-    headers = {
-        "Authorization": f"Bearer {jwt}", 
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    
-    prompt = f"""Анкета клиента:
-- Имя: {data.get('name', 'не указано')}, возраст: {data.get('age', 'не указан')}
-- Рост: {data.get('height', 'не указан')} см, вес: {data.get('weight', 'не указан')} кг
-- Цели: {data.get('goals', 'не указаны')}
-- Ограничения/травмы: {data.get('injuries', 'нет')}
-
-Составь детальный 4-недельный план тренировок (3 раза в неделю) с рационом питания и рекомендациями по восстановлению.
-Структура:
-1. Тренировочная программа по неделям
-2. План питания (КБЖУ, примеры блюд)
-3. Рекомендации по восстановлению
-4. Советы по отслеживанию прогресса"""
-    
-    body = {
-        "model": "GigaChat",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 2000
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://gigachat.api.sberbank.ru/v1/chat/completions",
-            headers=headers,
-            json=body
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            return result["choices"][0]["message"]["content"]
-
-async def generate_plan_with_edit(data: Dict[str, Any], edit_text: str) -> str:
-    """Генерация плана с учётом правок тренера"""
-    if not edit_text or not edit_text.strip():
-        raise ValueError("Текст правок не может быть пустым")
-    
-    # Сначала получаем исходный план
-    original_plan = await generate_plan(data)
-    
-    jwt = await get_giga_jwt()
-    headers = {
-        "Authorization": f"Bearer {jwt}", 
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    
-    prompt = f"""Исходный фитнес-план:
-{original_plan}
-
-Тренер попросил внести следующие правки:
-{edit_text}
-
-Пожалуйста, перепиши план, учитывая эти правки. Сохрани структуру плана, но внеси необходимые изменения."""
-    
-    body = {
-        "model": "GigaChat",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 2000
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://gigachat.api.sberbank.ru/v1/chat/completions",
-            headers=headers,
-            json=body
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            return result["choices"][0]["message"]["content"]
-
-# --- 5. Получение последней анкеты ---
 async def get_last_anketa(user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Получение последней анкеты из БД"""
+    from config import DB_URL
+    
     conn = await asyncpg.connect(DB_URL)
     try:
         if user_id:
@@ -192,9 +111,10 @@ async def get_last_anketa(user_id: Optional[int] = None) -> Optional[Dict[str, A
     finally:
         await conn.close()
 
-# --- 6. Сохранение плана ---
 async def save_plan(data: Dict[str, Any]) -> None:
     """Сохранение плана в БД"""
+    from config import DB_URL
+    
     conn = await asyncpg.connect(DB_URL)
     try:
         await conn.execute("""
@@ -208,27 +128,210 @@ async def save_plan(data: Dict[str, Any]) -> None:
     finally:
         await conn.close()
 
-# --- 7. Обновление JWT (для cron job) ---
-async def refresh_jwt() -> None:
-    """Обновление JWT токена (асинхронная версия)"""
-    CLIENT_ID = os.getenv("GIGA_CLIENT_ID")
-    if not CLIENT_ID:
-        print("GIGA_CLIENT_ID не установлен")
+# --- 4. Генерация плана через GigaChat ---
+def create_fitness_prompt(user_data: Dict[str, Any]) -> str:
+    """Создание промпта для генерации фитнес-плана"""
+    return f"""
+Создай подробный персонализированный фитнес-план на основе данных пользователя:
+
+👤 О пользователе:
+- Имя: {user_data.get('name', 'Не указано')}
+- Возраст: {user_data.get('age', 'Не указан')}
+- Рост: {user_data.get('height', 'Не указан')} см
+- Вес: {user_data.get('weight', 'Не указан')} кг
+- Цели: {user_data.get('goals', 'Не указаны')}
+- Ограничения/травмы: {user_data.get('injuries', 'Нет')}
+
+🎯 Структура плана (используй Markdown разметку):
+
+## 1. ТРЕНИРОВОЧНАЯ ПРОГРАММА (4 недели)
+### Неделя 1-2: Адаптация
+- Расписание тренировок (3-4 раза в неделю)
+- Упражнения с подходами и повторениями
+- Интенсивность и время отдыха
+
+### Неделя 3-4: Прогрессия
+- Увеличение нагрузок
+- Новые упражнения
+- Методики прогрессии
+
+## 2. ПЛАН ПИТАНИЯ
+### Рекомендации по КБЖУ:
+- Калории: подходящая калорийность
+- Белки, жиры, углеводы: соотношение
+
+### Примерный рацион на день:
+- Завтрак, обед, ужин, перекусы
+
+### Режим питания:
+- Частота приёмов пищи
+- Время питания
+- Гидратация
+
+## 3. РЕКОМЕНДАЦИИ
+### Восстановление:
+- Сон (количество часов)
+- Растяжка
+- Отдых между тренировками
+
+### Отслеживание прогресса:
+- Замеры (что и как часто измерять)
+- Дневник тренировок
+
+План должен быть практичным, мотивирующим и учитывать индивидуальные особенности.
+"""
+
+async def generate_plan(user_data: Dict[str, Any]) -> str:
+    """Генерация фитнес-плана через GigaChat"""
+    if not giga_auth:
+        raise Exception("GigaChat не настроен. Проверьте GIGA_CLIENT_ID в .env")
+    
+    try:
+        # Получаем токен
+        token = await giga_auth.get_token()
+        if not token:
+            raise Exception("Не удалось получить токен GigaChat")
+        
+        # Формируем промпт
+        prompt = create_fitness_prompt(user_data)
+        
+        # Отправляем запрос
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "GigaChat",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Ты профессиональный фитнес-тренер и диетолог. Составь персонализированный план тренировок и питания. Отвечай на русском языке, используй Markdown для форматирования."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.7,
+                "max_tokens": 2000
+            }
+            
+            async with session.post(
+                "https://gigachat.api.sberbank.ru/v1/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"GigaChat API error {response.status}: {error_text}")
+                
+                result = await response.json()
+                return result["choices"][0]["message"]["content"]
+                
+    except Exception as e:
+        print(f"❌ Ошибка генерации плана: {e}")
+        raise
+
+async def generate_plan_with_edit(user_data: Dict[str, Any], edit_text: str) -> str:
+    """Генерация плана с учётом правок тренера"""
+    if not giga_auth:
+        raise Exception("GigaChat не настроен")
+    
+    # Получаем токен
+    token = await giga_auth.get_token()
+    if not token:
+        raise Exception("Не удалось получить токен GigaChat")
+    
+    # Формируем промпт с правками
+    prompt = f"""
+На основе следующих данных пользователя создай фитнес-план:
+
+Имя: {user_data.get('name', 'Не указано')}
+Возраст: {user_data.get('age', 'Не указан')}
+Рост: {user_data.get('height', 'Не указан')} см
+Вес: {user_data.get('weight', 'Не указан')} кг
+Цели: {user_data.get('goals', 'Не указаны')}
+Ограничения: {user_data.get('injuries', 'Нет')}
+
+Комментарии тренера для исправления:
+{edit_text}
+
+Пожалуйста, создай подробный фитнес-план с учётом этих замечаний.
+Включи: тренировочную программу на 4 недели, план питания, рекомендации.
+Используй Markdown для форматирования.
+"""
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "GigaChat",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.7,
+                "max_tokens": 2000
+            }
+            
+            async with session.post(
+                "https://gigachat.api.sberbank.ru/v1/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                result = await response.json()
+                return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"❌ Ошибка генерации плана с правками: {e}")
+        raise
+
+# --- 5. Отправка тренеру ---
+async def send_to_trainer(data: Dict[str, Any]) -> None:
+    """Отправка анкеты тренеру"""
+    bot = get_bot()
+    if not bot:
+        print("❌ Бот не инициализирован")
         return
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://gigachat.api.sberbank.ru/v1/token",
-            headers={"Authorization": f"Bearer {CLIENT_ID}"},
-            data={"scope": "GIGACHAT_API_PERS"}
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            jwt = result["access_token"]
-            
-            # Сохраняем токен
-            os.makedirs("/opt/ai-fit", exist_ok=True)
-            with open("/opt/ai-fit/.jwt", "w") as f:
-                f.write(jwt)
-            
-            print(f"JWT обновлён: {datetime.datetime.now()}")
+    from config import TRAINER_CHAT_ID
+    
+    text = f"""
+📋 Новая анкета от @{data.get('username', 'не_указан')} (ID: {data['user_id']})
+
+Имя: {data['name']}
+Возраст: {data['age']}
+Рост: {data['height']} см
+Вес: {data['weight']} кг
+Цели: {data['goals']}
+Травмы: {data.get('injuries', 'нет')}
+
+Отправьте '+' чтобы сгенерировать план.
+"""
+    await bot.send_message(TRAINER_CHAT_ID, text)
+
+# --- 6. Фоновая задача для обновления токена ---
+async def token_refresher_task():
+    """Фоновая задача для периодического обновления токена"""
+    if not giga_auth:
+        return
+    
+    while True:
+        try:
+            # Обновляем токен каждые 20 минут
+            await asyncio.sleep(20 * 60)
+            token = await giga_auth.get_token()
+            if token:
+                print(f"✅ Токен обновлён в фоне")
+            else:
+                print("⚠️ Не удалось обновить токен")
+        except Exception as e:
+            print(f"Ошибка обновления токена: {e}")
+            await asyncio.sleep(60)
