@@ -2,8 +2,8 @@ from typing import TYPE_CHECKING
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery   # ← основные типы
-from ..states.anketa import AnketaStates
-from ..utils import save_anketa, send_to_trainer
+from states.anketa import AnketaStates
+from utils.utils import save_anketa, send_to_trainer
 
 if TYPE_CHECKING:
     from aiogram.types import Message

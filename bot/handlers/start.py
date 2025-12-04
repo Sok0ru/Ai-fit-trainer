@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.filters import CommandStart
-from ..states.anketa import AnketaStates
+from states.anketa import AnketaStates
 from aiogram.fsm.context import FSMContext
 router = Router()
 
