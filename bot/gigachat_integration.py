@@ -1,79 +1,73 @@
-import os
-import uuid
+"""
+Адаптер для совместимости с существующим кодом
+ЗАМЕНА GigaChat API на OpenAI через ProxyAPI
+"""
+
 import logging
-from datetime import datetime, timedelta
-import requests
-import requests.packages.urllib3.util.connection as conn
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# ---------- ваши ключи ----------
-AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")   # Basic ... из личного кабинета
-SCOPE    = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+# Пробуем использовать ProxyAPI
+try:
+    from proxy_openai_integration import generate_plan as proxy_generate_plan
+    from proxy_openai_integration import generate_plan_with_edit as proxy_generate_plan_with_edit
+    from proxy_openai_integration import proxy_api
+    
+    logger.info("✅ Используется OpenAI через ProxyAPI")
+    
+    # Экспортируем функции под теми же именами
+    def generate_plan(data: Dict[str, Any]) -> Optional[str]:
+        return proxy_generate_plan(data)
+    
+    def generate_plan_with_edit(data: Dict[str, Any], edit_text: str) -> Optional[str]:
+        return proxy_generate_plan_with_edit(data, edit_text)
+    
+    # Для обратной совместимости
+    gigachat_api = proxy_api
+    
+except ImportError as e:
+    logger.error(f"❌ Ошибка импорта ProxyAPI: {e}")
+    
+    # Fallback на простые шаблоны
+    logger.info("🔄 Используем автономные шаблоны")
+    
+    FALLBACK_PLANS = [
+        """️ **ФИТНЕС-ПЛАН** (4 недели)
 
-# ---------- фикс-IP + официальные пути ----------
-TOKEN_URL = "https://185.157.96.168:9443/api/v2/oauth"
-CHAT_URL  = "https://185.157.96.168:443/api/v1/chat/completions"
+**НЕДЕЛЯ 1-2: АДАПТАЦИЯ**
+- Кардио: 30 мин, 3 раза/неделю
+- Силовые: приседания, отжимания, планка
 
-_token = None
-_expires = None
+**НЕДЕЛЯ 3-4: ПРОГРЕСС**
+- Увеличить нагрузку на 20%
+- Добавить новые упражнения""",
+    ]
+    
+    import random
+    
+    def generate_plan(data: Dict[str, Any]) -> Optional[str]:
+        plan = random.choice(FALLBACK_PLANS)
+        personalized = f"""**ПЛАН ДЛЯ {data.get('name', 'клиента')}**
 
-_orig_create_connection = conn.create_connection
-def patched_create_connection(address, *args, **kwargs):
-    host, port = address
-    if host == "ngw.devices.sberbank.ru":
-        host = "185.157.96.168"
-    elif host == "gigachat.devices.sberbank.ru":
-        host = "185.157.96.168"
-    return _orig_create_connection((host, port), *args, **kwargs)
+Данные:
+• Возраст: {data.get('age', 'Н/Д')}
+• Цели: {data.get('goals', 'общее укрепление')}
+• Ограничения: {data.get('injuries', 'нет')}
 
-conn.create_connection = patched_create_connection
-# ---------- получение токена (30 мин) ----------
-def _get_token() -> str:
-    global _token, _expires
-    if _token and _expires and datetime.utcnow() < _expires:
-        return _token
+{plan}"""
+        return personalized
+    
+    def generate_plan_with_edit(data: Dict[str, Any], edit_text: str) -> Optional[str]:
+        base_plan = generate_plan(data)
+        return f"""**С ПРАВКАМИ ТРЕНЕРА**
 
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "RqUID": str(uuid.uuid4()),
-        "Authorization": AUTH_KEY,
-        "Host": "ngw.devices.sberbank.ru"      # SNI
-    }
-    data = {"scope": SCOPE}
+{edit_text}
 
-    try:
-        resp = requests.post(TOKEN_URL, headers=headers, data=data, verify=False, timeout=10)
-        resp.raise_for_status()
-        j = resp.json()
-        _token = j["access_token"]
-        _expires = datetime.utcnow() + timedelta(seconds=j["expires_at"] - 10)
-        logger.info("GigaChat токен получен")
-        return _token
-    except Exception as e:
-        logger.exception("Ошибка получения токена")
-        raise RuntimeError("Не удалось получить токен GigaChat") from e
-
-# ---------- генерация плана ----------
-def generate_plan(prompt: str) -> str:
-    token = _get_token()
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
-        "Host": "gigachat.devices.sberbank.ru"   # SNI
-    }
-    payload = {
-        "model": "GigaChat",
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False
-    }
-
-    try:
-        resp = requests.post(CHAT_URL, headers=headers, json=payload, verify=False, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.exception("Ошибка генерации плана")
-        raise RuntimeError("Не удалось подключиться к GigaChat API. Проверьте сетевые настройки.") from e
+{base_plan}"""
+    
+    class DummyAPI:
+        def test_connection(self):
+            return False
+    
+    gigachat_api = DummyAPI()

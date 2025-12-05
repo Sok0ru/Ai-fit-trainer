@@ -1,14 +1,22 @@
+"""
+Конфигурация для aiogram бота
+"""
+
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# Токен бота из переменных окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
-# Telegram
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-TRAINER_CHAT_ID = int(os.getenv("TRAINER_CHAT_ID", 0))
+# ID тренера для отправки планов на проверку
+TRAINER_CHAT_ID = os.getenv('TRAINER_CHAT_ID', '')
 
-# Database
-DB_URL = os.getenv("DB_URL", "postgresql://bot:strongpass@postgres/fitbot")
+# Настройки ProxyAPI
+PROXY_API_KEY = os.getenv('PROXY_API_KEY', '')
+PROXY_MODEL = os.getenv('PROXY_MODEL', 'openai/gpt-5-nano')
 
-# GigaChat
-GIGA_CLIENT_ID = os.getenv("GIGA_CLIENT_ID")
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не установлен в .env файле")
+
+if not PROXY_API_KEY:
+    print("⚠️  Внимание: PROXY_API_KEY не установлен. Генерация планов будет использовать fallback.")
